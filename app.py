@@ -8,6 +8,9 @@ import socket
 import threading
 import time
 
+import sys
+import webbrowser
+
 from flask import Flask, jsonify, render_template, request
 
 import config
@@ -17,15 +20,23 @@ from core.transfer import TransferEngine, FileSender
 from core.netutil import send_msg, recv_msg
 from core import state
 
-app = Flask(__name__)
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+    TEMPLATE_DIR = os.path.join(sys._MEIPASS, "templates")
+    app = Flask(__name__, template_folder=TEMPLATE_DIR)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    app = Flask(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RECEIVE_DIR_PATH = os.path.join(BASE_DIR, config.RECEIVE_DIR)
+os.makedirs(RECEIVE_DIR_PATH, exist_ok=True)
+
 identity = Identity()
 identity.control_port = config.TCP_PORT
 
 _stop = threading.Event()
 discovery = Discovery(identity, config.DISCOVERY_PORT, _stop)
-engine = TransferEngine(identity, os.path.join(BASE_DIR, config.RECEIVE_DIR))
+engine = TransferEngine(identity, RECEIVE_DIR_PATH)
 
 _outgoing = {"sock": None, "lock": threading.Lock()}   # sender-side control conn
 _current_sender = {"thread": None}
@@ -121,14 +132,6 @@ def api_connect():
 
 @app.route("/api/disconnect", methods=["POST"])
 def api_disconnect():
-    # --- setup-time: verify the UDP data path first (file travels over UDP) ---
-    udp_ack = engine.udp_probe(target)
-    udp_ok = udp_ack is not None
-    if udp_ok:
-        state.log("UDP probe OK: %s (%s)" % (udp_ack.get("name", "?"), target))
-    else:
-        state.log("WARNING: UDP probe to %s failed - file data may not arrive" % target)
-
     with _outgoing["lock"]:
         if _outgoing["sock"] is not None:
             try:
@@ -172,7 +175,29 @@ def api_cancel():
     return jsonify({"ok": False, "reason": "no active transfer"})
 
 
+@app.route("/api/open-received", methods=["POST"])
+def api_open_received():
+    try:
+        os.makedirs(RECEIVE_DIR_PATH, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(RECEIVE_DIR_PATH)
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", RECEIVE_DIR_PATH])
+        return jsonify({"ok": True, "path": RECEIVE_DIR_PATH})
+    except Exception as exc:
+        return jsonify({"ok": False, "reason": str(exc)})
+
+
 # ------------------------------------------------------------- startup
+
+def _open_browser():
+    time.sleep(1.2)
+    try:
+        webbrowser.open("http://127.0.0.1:5000")
+    except Exception:
+        pass
+
 
 def main():
     identity.refresh_ip()
@@ -182,7 +207,8 @@ def main():
     state.log("LAN File Transfer started")
     state.log("My IP: %s   Name: %s" % (identity.ip, identity.name))
     state.log("Dashboard: http://127.0.0.1:5000")
-    state.log("Receive folder: %s" % os.path.join(BASE_DIR, config.RECEIVE_DIR))
+    state.log("Receive folder: %s" % RECEIVE_DIR_PATH)
+    threading.Thread(target=_open_browser, daemon=True).start()
     try:
         app.run(host="127.0.0.1", port=5000, threaded=True)
     finally:
