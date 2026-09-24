@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LAN Transfer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --line:#e5e7eb; --txt:#111827; --sub:#6b7280; --accent:#2563eb; }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+         background:#fff; color:var(--txt); min-height:100vh;
+         display:flex; justify-content:center; padding:48px 20px; }
+  main { width:100%; max-width:460px; }
+  h1 { font-size:17px; font-weight:600; letter-spacing:.3px; margin-bottom:28px;
+       display:flex; align-items:center; gap:8px; }
+  section { margin-bottom:28px; }
+  .label { font-size:11px; text-transform:uppercase; letter-spacing:.8px;
+           color:var(--sub); margin-bottom:6px; }
+  .ip { font-size:32px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .row { display:flex; gap:8px; }
+  input { flex:1; border:1px solid var(--line); border-radius:8px;
+          padding:9px 12px; font-size:14px; outline:none; min-width:0; }
+  input:focus { border-color:var(--accent); }
+  button { border:0; border-radius:8px; padding:9px 16px; font-size:13px;
+           font-weight:600; cursor:pointer; background:var(--accent); color:#fff; }
+  button.ghost { background:#fff; color:var(--txt); border:1px solid var(--line); }
+  button:disabled { opacity:.4; cursor:default; }
+  .peer { display:flex; align-items:center; justify-content:space-between;
+          padding:11px 2px; border-bottom:1px solid var(--line); font-size:14px; }
+  .peer button { padding:6px 14px; }
+  .peer small { color:var(--sub); margin-left:8px; }
+  .empty { color:var(--sub); font-size:13px; padding:10px 2px; }
+  .conn { display:flex; align-items:center; gap:8px; font-size:14px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#d1d5db; }
+  .dot.on { background:#22c55e; }
+  .proto { font-size:12px; color:var(--sub); margin-top:10px; line-height:1.7; }
+  .proto code { background:#f3f4f6; padding:1px 6px; border-radius:4px; }
+  .bar { height:6px; background:#f3f4f6; border-radius:99px; overflow:hidden;
+         margin:12px 0 8px; }
+  .bar div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+  .meta { display:flex; justify-content:space-between; font-size:12px;
+          color:var(--sub); }
+  details { font-size:12px; color:var(--sub); }
+  summary { cursor:pointer; margin-bottom:6px; }
+  #log { font-family:ui-monospace,Consolas,monospace; font-size:11px;
+         color:#374151; max-height:120px; overflow-y:auto;
+         border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>⇄ LAN File Transfer</h1>
+
+  <section>
+    <div class="label">This computer</div>
+    <div class="ip" id="myip">…</div>
+    <div class="row" style="margin-top:12px">
+      <input id="name" placeholder="Computer name">
+      <button class="ghost" onclick="saveName()">Save</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">Devices</div>
+    <div id="peers"></div>
+    <div class="row" style="margin-top:12px">
+      <input id="manualIp" placeholder="IP, e.g. 192.168.1.36">
+      <button onclick="connectTo(document.getElementById('manualIp').value)">Connect</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">Connection</div>
+    <div class="conn"><span class="dot" id="dot"></span><span id="connText">Not connected</span></div>
+    <div class="proto" id="proto"></div>
+  </section>
+
+  <section>
+    <div class="label">Transfer</div>
+    <div class="row">
+      <input id="filePath" placeholder="File path to send">
+      <button onclick="sendFile()">Send</button>
+    </div>
+    <div class="bar"><div id="bar"></div></div>
+    <div class="meta"><span id="trLeft">Idle</span><span id="trRight"></span></div>
+  </section>
+
+  <details>
+    <summary>Activity log</summary>
+    <div id="log"></div>
+  </details>
+</main>
+
+<script>
+async function j(u,o){ const r = await fetch(u,o); return r.json(); }
+async function refresh(){
+  const s = await j('/api/status');
+  document.getElementById('myip').textContent = s.identity.ip;
+  document.getElementById('name').value = s.identity.name;
+
+  document.getElementById('peers').innerHTML = s.peers.map(p =>
+    `<div class="peer"><span>${p.name}<small>${p.ip}</small></span>
+     <button class="ghost" onclick="connectTo('${p.ip}')">Connect</button></div>`
+  ).join('') || '<div class="empty">No devices found yet — start the app on the other laptop.</div>';
+
+  const c = s.connection, on = c.status === 'connected';
+  document.getElementById('dot').className = 'dot' + (on ? ' on' : '');
+  document.getElementById('connText').textContent = on
+    ? `${c.peer_name} (${c.peer_ip})`
+    : 'Not connected';
+  document.getElementById('proto').innerHTML = on
+    ? `setup probe <code>UDP</code> ${c.udp_ok ? '✓' : '✗'} · control <code>TCP</code> · data <code>UDP · 5 streams</code>`
+    : '';
+
+  const t = s.transfer;
+  document.getElementById('bar').style.width = (t.active ? t.percent : 0) + '%';
+  document.getElementById('trLeft').textContent = t.active
+    ? `${t.direction === 'send' ? '↑' : '↓'} ${t.filename}` : 'Idle';
+  document.getElementById('trRight').textContent = t.active
+    ? `${t.percent}% · ${t.speed_mbps} MB/s`
+    : (t.result && t.result !== 'running' ? t.result.toUpperCase() : '');
+
+  document.getElementById('log').innerHTML =
+    s.log.map(e => `[${e.t}] ${e.msg}`).join('<br>');
+}
+async function saveName(){
+  await j('/api/identity',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:document.getElementById('name').value})});
+}
+async function connectTo(ip){
+  if(!ip) return;
+  const r = await j('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ip})});
+  if(!r.ok) alert('Connect failed: ' + r.reason);
+  else if(!r.udp_ok) alert('Connected, but UDP probe failed.\nFile data may not arrive — check firewall/UDP port ' + r.protocol.handshake_probe);
+  refresh();
+}
+async function sendFile(){
+  const r = await j('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path:document.getElementById('filePath').value})});
+  if(!r.ok) alert('Send failed: ' + r.reason);
+}
+refresh(); setInterval(refresh, 1000);
+</script>
+</body>
+</html>
